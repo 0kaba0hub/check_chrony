@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+
+# release version 0.1
+# Variables
+chronyDaemonName="chronyd"
+leapOk="Normal"
+debug=false
+
+# Helper function to display help
+function help() {
+  echo "Usage: check_chrony [options]"
+  echo "    -w [warning threshold in seconds]"
+  echo "    -c [critical threshold in seconds]"
+  echo "    --debug        Enable debug output"
+  echo "    e.g.: check_chrony -w 0.6 -c 2 --debug"
+  exit 3
+}
+
+# Helper function to exit with Icinga/Nagios standard status
+function exit_with_status() {
+  local status=$1
+  local message=$2
+  local states=("OK" "WARNING" "CRITICAL" "UNKNOWN")
+  echo "${states[$status]}: $message"
+  exit $status
+}
+
+# Check if process exists
+function proc_exists() {
+  pgrep -x "$1" > /dev/null
+  return $?
+}
+
+# Exit if no arguments are provided
+if [[ $# -eq 0 ]]; then
+  help
+fi
+
+# Parse options
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -w)
+      warning="$2"
+      shift 2
+      ;;
+    -c)
+      critical="$2"
+      shift 2
+      ;;
+    --debug)
+      debug=true
+      shift
+      ;;
+    *)
+      help
+      ;;
+  esac
+done
+
+# Verify options are numbers
+if ! [[ "$warning" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! [[ "$critical" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  exit_with_status 3 "Value of option -w or -c is not a valid number!"
+fi
+
+# Check if chrony process is running
+if ! proc_exists "$chronyDaemonName"; then
+  exit_with_status 2 "$chronyDaemonName is not running!"
+fi
+
+# Get chrony tracking data
+chronyOutput=$(chronyc tracking 2>/dev/null)
+if [[ $? -ne 0 ]]; then
+  exit_with_status 3 "Chronyc tracking command failed!"
+fi
+
+# Print chrony output for debugging if debug is enabled
+if $debug; then
+  echo "DEBUG: chronyOutput:"
+  echo "$chronyOutput"
+fi
+
+# Extract offset and direction using regex matching with bash
+offset=$(echo "$chronyOutput" | grep -oP 'System time\s+:\s+([-+]?[0-9]*\.?[0-9]+)' | awk '{print $NF}')
+dir=$(echo "$chronyOutput" | grep -oP 'System time\s+:\s+([-+]?[0-9]*\.?[0-9]+)\s+(\w+)' | awk '{print $NF}')
+leap=$(echo "$chronyOutput" | awk -F': ' '/Leap status/ {print $2}')
+
+# Debug output for offset and direction
+if $debug; then
+  echo "DEBUG: offset='$offset', direction='$dir', leap='$leap'"
+fi
+
+# Check if offset and direction are valid
+if [[ -z "$offset" || -z "$dir" ]]; then
+  exit_with_status 3 "Failed to parse offset or direction from chronyc output!"
+fi
+
+# Check offset and assign appropriate status
+if (( $(echo "$offset >= $critical" | bc -l) )); then
+  rc=2 # Critical
+elif (( $(echo "$offset >= $warning" | bc -l) )); then
+  rc=1 # Warning
+else
+  rc=0 # OK
+fi
+
+# Adjust offset direction
+if [[ "$dir" == "slow" ]]; then
+  offset="-$offset"
+else
+  offset="+$offset"
+fi
+
+msg=$(printf "Time offset of %+.9f seconds to reference." "$offset")
+perfdata=$(printf "|offset=%.9fs;%.9f;%.9f" "$offset" "$warning" "$critical")
+
+# Check leap status
+if [[ "$leap" != "$leapOk" ]]; then
+  exit_with_status 2 "Chrony leap status \"$leap\" is not equal to \"$leapOk\"! $msg $perfdata"
+fi
+
+# Final output
+exit_with_status $rc "$msg $perfdata"
+
