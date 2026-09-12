@@ -55,7 +55,7 @@ fi
 
 # "System time" line format: "System time     :  0.000046626 seconds slow of NTP time"
 offset=$(echo "$chrony_output" | awk '/System time/ {print $4}')
-dir=$(echo "$chrony_output"    | awk '/System time/ {print $5}')
+dir=$(echo "$chrony_output"    | awk '/System time/ {print $6}')
 leap=$(echo "$chrony_output"   | awk -F': ' '/Leap status/ {print $2}')
 
 if [[ $debug == true ]]; then
